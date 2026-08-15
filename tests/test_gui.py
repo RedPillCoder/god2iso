@@ -112,7 +112,7 @@ class GuiTests(unittest.TestCase):
         ws = gui.preflight_warnings(self.live, existing, force=True)
         self.assertFalse(any("already exists" in w for w in ws))
 
-        def test_gui_flag_headless_graceful(self):
+    def test_gui_flag_headless_graceful(self):
         """--gui without a display must give a clean message, no traceback.
 
         On headless Linux there is no display, so the GUI cannot open and
