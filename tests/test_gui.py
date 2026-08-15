@@ -112,14 +112,38 @@ class GuiTests(unittest.TestCase):
         ws = gui.preflight_warnings(self.live, existing, force=True)
         self.assertFalse(any("already exists" in w for w in ws))
 
-    def test_gui_flag_headless_graceful(self):
-        """--gui without a display must give a clean message, no traceback."""
-        if os.environ.get("DISPLAY"):
-            self.skipTest("display present")
-        rc = run_tool("--gui")
-        self.assertEqual(rc.returncode, 1)
-        self.assertIn("GUI unavailable", rc.stderr)
-        self.assertNotIn("Traceback", rc.stderr)
+        def test_gui_flag_headless_graceful(self):
+        """--gui without a display must give a clean message, no traceback.
+
+        On headless Linux there is no display, so the GUI cannot open and
+        the tool must fail gracefully.  On Windows (and any machine with a
+        display) the GUI *does* open - we verify it launches and stays
+        alive, then terminate it.  (Without this branch the test would hang
+        forever on Windows CI: tk.mainloop() never returns.)
+        """
+        if os.name != "nt" and not os.environ.get("DISPLAY"):
+            rc = run_tool("--gui")
+            self.assertEqual(rc.returncode, 1)
+            self.assertIn("GUI unavailable", rc.stderr)
+            self.assertNotIn("Traceback", rc.stderr)
+        else:
+            # display present (Windows runner or local x11): the GUI opens.
+            # Launch it, confirm the process stays alive (window created),
+            # then terminate - never let mainloop() block CI.
+            import time
+            p = subprocess.Popen(
+                [sys.executable, TOOL, "--gui"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                time.sleep(8)
+                self.assertIsNone(p.poll(),
+                                  "GUI process exited unexpectedly")
+            finally:
+                p.terminate()
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    p.kill()
 
     def test_gui_module_imports_clean(self):
         """The gui module must import with no network-capable modules."""
