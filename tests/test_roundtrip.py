@@ -300,6 +300,9 @@ class God2IsoTests(unittest.TestCase):
         rc2 = run_tool("list", out)
         self.assertEqual(rc2.returncode, 0, rc2.stderr)
         self.assertIn("default.xex", rc2.stdout)
+        # byte-exact: output[0x10000:] must equal the stored payload
+        out_bytes = open(out, "rb").read()
+        self.assertEqual(out_bytes[0x10000:], payload)
         # extract via auto-detected offset
         exdir = os.path.join(d, "x")
         rc3 = run_tool("extract", out, exdir)
@@ -312,6 +315,94 @@ class God2IsoTests(unittest.TestCase):
         rc4 = run_tool("rebuild", out, "-o", rb)
         self.assertEqual(rc4.returncode, 0, rc4.stderr)
         self.assertEqual(xiso.find_default_xex(rb), "default.xex")
+
+    # -- Merkle hash tree (MHT) deep verification ------------------------------
+
+    def test_mht_verify_passes_multipart(self):
+        """convert must deep-verify and pass on multi-part packages (both
+        flavors), proving the extracted data matches the stored SHA-1 tree."""
+        for flavor in ("A", "B"):
+            with self.subTest(flavor=flavor):
+                d = self.fresh_dir()
+                live, _ = make_fake_god.godify(
+                    self.iso_bytes, d, flavor=flavor,
+                    part_cuts=[0xCC000, 3 * 0xCC000])
+                out = os.path.join(d, "out.iso")
+                rc = run_tool("convert", live, "-o", out)
+                self.assertEqual(rc.returncode, 0, rc.stdout + rc.stderr)
+                self.assertIn("MHT verification: PASSED", rc.stdout)
+                self.assertNotIn("FAILED", rc.stdout)
+
+    def test_mht_verify_detects_corrupted_data(self):
+        """A single flipped byte in a part's data must be caught by the
+        deep verification (exit code 4), even though the ISO still parses."""
+        d = self.fresh_dir()
+        live, parts = make_fake_god.godify(self.iso_bytes, d, flavor="A",
+                                           part_cuts=[0xCC000])
+        # flip a byte inside data0 of part0 (offset 0x2000 + 0x30000);
+        # stream offset 0x30000 lies in the ISO's unused header region, so
+        # the filesystem still parses - only the MHT check can catch it
+        with open(parts[0], "r+b") as f:
+            f.seek(0x2000 + 0x30000)
+            b = f.read(1)
+            f.seek(0x2000 + 0x30000)
+            f.write(bytes([b[0] ^ 0xFF]))
+        out = os.path.join(d, "out.iso")
+        rc = run_tool("convert", live, "-o", out)
+        self.assertEqual(rc.returncode, 4, rc.stdout + rc.stderr)
+        self.assertIn("MHT verification: FAILED", rc.stdout)
+        # with --no-verify the conversion still completes (rc 0: ISO parses)
+        out2 = os.path.join(d, "out2.iso")
+        rc2 = run_tool("convert", live, "-o", out2, "--no-verify")
+        self.assertEqual(rc2.returncode, 0, rc2.stdout + rc2.stderr)
+        self.assertNotIn("MHT verification", rc2.stdout)
+
+    def test_mht_verify_zeroed_hashes_tolerated(self):
+        """GODs whose hash lists were not populated (all zeroes) must still
+        convert; deep verification reports it as skipped, not failed."""
+        d = self.fresh_dir()
+        live, parts = make_fake_god.godify(self.iso_bytes, d, flavor="A",
+                                           part_cuts=[0xCC000])
+        # zero the master + first sub-list
+        with open(parts[0], "r+b") as f:
+            f.seek(0)
+            f.write(b"\x00" * 0x2000)
+        out = os.path.join(d, "out.iso")
+        rc = run_tool("convert", live, "-o", out)
+        self.assertEqual(rc.returncode, 0, rc.stdout + rc.stderr)
+        self.assertIn("zeroed", rc.stdout)
+        self.assertNotIn("FAILED", rc.stdout)
+
+    def test_mht_verify_detects_corrupted_master(self):
+        """Tampering with a stored master-list hash must fail verification."""
+        d = self.fresh_dir()
+        live, parts = make_fake_god.godify(self.iso_bytes, d, flavor="A",
+                                           part_cuts=[0xCC000])
+        with open(parts[0], "r+b") as f:
+            f.seek(0x10)
+            b = f.read(1)
+            f.seek(0x10)
+            f.write(bytes([b[0] ^ 0xFF]))
+        out = os.path.join(d, "out.iso")
+        rc = run_tool("convert", live, "-o", out)
+        self.assertEqual(rc.returncode, 4, rc.stdout + rc.stderr)
+        self.assertIn("MHT verification: FAILED", rc.stdout)
+
+    def test_mht_verify_detects_wrong_root(self):
+        """A .live whose MHT root hash does not match the parts must fail."""
+        d = self.fresh_dir()
+        live, _ = make_fake_god.godify(self.iso_bytes, d, flavor="A",
+                                       part_cuts=[0xCC000])
+        # corrupt one byte of the root hash in the .live
+        with open(live, "r+b") as f:
+            f.seek(0x37D)
+            b = f.read(1)
+            f.seek(0x37D)
+            f.write(bytes([b[0] ^ 0xFF]))
+        out = os.path.join(d, "out.iso")
+        rc = run_tool("convert", live, "-o", out)
+        self.assertEqual(rc.returncode, 4, rc.stdout + rc.stderr)
+        self.assertIn("root", rc.stdout)
 
     # -- info / list / extract / rebuild --------------------------------------
 
