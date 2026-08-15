@@ -54,7 +54,7 @@ Write-Host "`n[1] version" -ForegroundColor Yellow
 & $ExePath --version | Out-Null
 Check "--version exits 0" ($LASTEXITCODE -eq 0)
 $ver = (& $ExePath --version 2>&1 | Out-String)
-Check "--version reports 1.2.x" ($ver -match "1\.2\.")
+Check "--version reports 1.3.x" ($ver -match "1\.3\.")
 
 # --- 2. audit (offline proof) ---------------------------------------------
 Write-Host "`n[2] audit" -ForegroundColor Yellow
