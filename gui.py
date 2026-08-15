@@ -224,6 +224,7 @@ class God2IsoApp:
         self.fix_var = tk.BooleanVar(value=False)
         self.force_var = tk.BooleanVar(value=False)
         self.sha_var = tk.BooleanVar(value=True)
+        self.verify_var = tk.BooleanVar(value=True)
         self.info_var = tk.StringVar(value="No package selected yet.")
 
         self._build_menu()
@@ -348,6 +349,8 @@ class God2IsoApp:
                         variable=self.trim_var).pack(side="left", **pad)
         ttk.Checkbutton(r3, text="Show SHA-256",
                         variable=self.sha_var).pack(side="left", **pad)
+        ttk.Checkbutton(r3, text="Deep verify (MHT)",
+                        variable=self.verify_var).pack(side="left", **pad)
         ttk.Checkbutton(r3, text="Fix header (advanced)",
                         variable=self.fix_var).pack(side="left", **pad)
         self.convert_btn = ttk.Button(r3, text="Convert", width=14,
@@ -508,6 +511,7 @@ class God2IsoApp:
         fix = self.fix_var.get()
         force = self.force_var.get()
         sha = self.sha_var.get()
+        verify = self.verify_var.get()
 
         def phase(msg):
             self.q.put(("phase", msg))
@@ -516,6 +520,7 @@ class God2IsoApp:
             lambda log, prog: core.convert(
                 live, out,
                 trim=trim, fix=fix, force=force, sha256=sha,
+                verify=verify,
                 log=log, progress_cb=prog, phase_cb=phase),
             log_txt=self.convert_log,
             status_ok=lambda: "Conversion complete - default.xex FOUND",
