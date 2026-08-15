@@ -345,7 +345,38 @@ The `.live` file, the part files and the ISO directory tables are treated as
 
 Optional: `--trim` cuts trailing zero padding to the size declared in the
 `.live`; `--fix` applies GOD2ISO's "FixCreateIsoGoodHeader" pass;
-`--sha256` prints the output checksum.
+`--sha256` prints the output checksum; `--no-verify` skips the deep
+verification (see below).
+
+### Precision: byte-exact reconstruction, *proven*
+
+Since v1.3.0 the converter performs a **deep Merkle-hash (MHT)
+verification** by default.  Every GOD part stores a SHA-1 hash tree (each
+0x1000 data block is hashed into sub hash lists, the sub lists into a
+master list per part, chained across parts, and rooted in the `.live`
+header).  After extraction the tool recomputes the whole chain:
+
+```
+data blocks -> sub hash lists -> master hash lists
+            -> cross-part chain -> .live root hash
+```
+
+If every hash matches, the extracted ISO is **byte-for-byte identical to
+the data that was stored in the GOD** (SHA-1 makes a false pass
+practically impossible) - this is independent of the filesystem-level
+verification (file counts / default.xex).  A mismatch exits with code 4
+and reports which part failed; `--no-verify` disables the check.  The GUI
+has a "Deep verify (MHT)" checkbox (on by default).
+
+**What "100% correct" means (and its honest limit):** a GOD package does
+not contain the parts of the original retail disc that live outside the
+game partition - the security sectors (DMI/PFI/SS), the video partition
+and the layer padding are not stored in it, so no tool (including GOD2ISO
+or the original iso2god reverse) can rebuild a byte-identical *full
+Redump image* from GOD alone.  What the GOD *does* contain - the complete
+game partition - is recovered and now **proven** byte-exact by the MHT
+verification, which is exactly what emulators (Xenia) and modded consoles
+need.
 
 ---
 
