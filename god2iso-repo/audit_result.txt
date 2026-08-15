@@ -1,2 +1,0 @@
-auditing /home/user/god2iso
-OK: no network-capable imports (fully offline), all modules compile
