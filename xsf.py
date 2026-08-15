@@ -32,7 +32,7 @@ XSF_UNKNOWN_FIELD = 0x400
 CREATOR = b"god2iso.py (format-compatible with God2Iso v1.0.5)"
 
 
-def make_xsf_header(total_len: int | None = None) -> bytearray:
+def make_xsf_header(total_len=None) -> bytearray:
     """Build a pristine XSF header template.
 
     If *total_len* is given the size fields are patched immediately,
