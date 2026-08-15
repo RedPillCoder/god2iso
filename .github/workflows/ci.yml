@@ -1,0 +1,94 @@
+# GitHub Actions: CI for god2iso
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyflakes
+      - name: Static checks
+        run: |
+          python -m pyflakes god2iso.py gui.py util.py xcontent.py xsf.py xiso.py tests/*.py
+          python -m py_compile god2iso.py gui.py util.py xcontent.py xsf.py xiso.py tests/*.py
+      - name: Offline audit
+        run: python god2iso.py audit
+      - name: Unit + safety tests
+        run: |
+          python tests/test_roundtrip.py
+          python tests/test_safety.py
+          python tests/test_gui.py
+      - name: GUI smoke (virtual display)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb x11-apps imagemagick
+          xvfb-run -a -s "-screen 0 1280x900x24" python tests/gui_smoke.py
+      - name: GUI end-to-end
+        run: |
+          xvfb-run -a -s "-screen 0 1280x900x24" python tests/gui_e2e.py
+      - name: Build reference extract-xiso and cross-validate
+        run: |
+          git clone --depth 1 https://github.com/XboxDev/extract-xiso.git /tmp/extract-xiso
+          gcc -O2 -D__LINUX__ -o /tmp/extract-xiso/extract-xiso-bin /tmp/extract-xiso/extract-xiso.c
+          EXTRACT_XISO=/tmp/extract-xiso/extract-xiso-bin python tests/test_cross_tool.py
+
+  windows:
+    name: Windows (Python ${{ matrix.python }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run tests on Windows
+        run: |
+          python -m pip install --upgrade pip
+          python tests/test_roundtrip.py
+          python tests/test_safety.py
+          python tests/test_gui.py
+
+  build-exe:
+    name: Build god2iso.exe
+    runs-on: windows-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build exe (audit-gated)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          python god2iso.py audit
+          python -m PyInstaller --noconfirm --clean god2iso.spec
+          python -m PyInstaller --noconfirm --clean god2iso_onedir.spec
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: god2iso-windows
+          path: |
+            dist/god2iso.exe
+            dist2/god2iso/
+          retention-days: 14
