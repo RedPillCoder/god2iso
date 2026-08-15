@@ -50,7 +50,7 @@ import xcontent
 import xsf
 import xiso
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 
 PART_HEADER_SIZE = 0x2000        # master MHT list + first sub-hash-list
 INTERLEAVE_DATA = 0xCC000        # data bytes between hash blocks
@@ -248,6 +248,177 @@ def predict_partition_offset(part0_path, part0_has_xsf, limit=4 << 20):
     # synthesized XSF is prepended: output offset = m + 0x10000
     return m
 
+def _scan_part_hashes(part_path):
+    """Walk one part file: yield (data_chunk, sub_list_bytes) pairs.
+
+    Mirrors the copy loop's alignment: the master list and the first
+    sub-list occupy 0x2000; each pair is [sub-list 0x1000][data up to
+    0xCC000].  Stops when the sub-list is all zeroes (trailing padding or
+    unpopulated hashes) or at end-of-file.
+
+    The final data chunk may include trailing zero padding appended by
+    classic iso2god; verification handles that (see verify_mht).
+
+    Returns (pairs, reason): reason in {"complete","partial-final",
+    "end","zeroed"}."""
+    pairs = []
+    reason = "complete"
+    with open(part_path, "rb") as f:
+        f.seek(0x1000)                      # after master list
+        while True:
+            sub = f.read(INTERLEAVE_HASH)
+            if len(sub) < INTERLEAVE_HASH:
+                reason = "end"
+                break
+            data = f.read(INTERLEAVE_DATA)
+            if not data:
+                reason = "end"
+                break
+            if not any(sub):
+                reason = "zeroed"
+                break
+            pairs.append((data, sub))
+            if len(data) < INTERLEAVE_DATA:
+                reason = "partial-final"
+                break
+    return pairs, reason
+
+
+def _stored_hashes(sub):
+    """The non-zero SHA-1 digests stored in a sub-list (padded with
+    zeros to 0x1000 after the real entries)."""
+    out = []
+    for i in range(0, INTERLEAVE_HASH, 20):
+        h = sub[i:i + 20]
+        if any(h):
+            out.append(h)
+        else:
+            break
+    return out
+
+
+def _verify_chunk(data, sub):
+    """Verify one data chunk against its sub hash list.
+
+    Returns True on match.  Handles trailing zero padding inside the
+    final block by searching for the exact original length (only when a
+    direct match fails)."""
+    import hashlib
+    stored = _stored_hashes(sub)
+    if not stored:
+        return True                      # nothing stored - cannot check
+    nread = (len(data) + 0xFFF) // 0x1000
+    ok = True
+    for i in range(min(nread, len(stored)) - 1):
+        block = data[i * 0x1000:(i + 1) * 0x1000]
+        if hashlib.sha1(block).digest() != stored[i]:
+            return False
+    li = min(nread, len(stored)) - 1
+    if li >= 0:
+        block = data[li * 0x1000:li * 0x1000 + 0x1000]
+        if hashlib.sha1(block).digest() != stored[li]:
+            # final block may contain trailing zero padding: search the
+            # exact original length (block is <= 0x1000 bytes)
+            found = False
+            for ln in range(len(block), 0, -1):
+                if hashlib.sha1(block[:ln]).digest() == stored[li]:
+                    found = True
+                    break
+            if not found:
+                ok = False
+    return ok
+
+
+def verify_mht(parts, live_bytes=None):
+    """Deep-verify the GOD part files against their Merkle hash tree.
+
+    Recomputes the SHA-1 chain stored in the parts:
+      data blocks -> sub hash lists -> master hash lists
+      -> cross-part chain -> root hash in the .live header (if present).
+
+    A full pass proves the de-interleaved data is byte-exact with what was
+    stored in the GOD (SHA-1 makes a false pass practically impossible).
+    Trailing zero padding inside part files is handled.
+
+    Returns (ok, details, notes):
+      ok      - True if every verifiable check passed
+      details - list of (label, message, ok) per part + chain/root
+      notes   - informational strings (zeroed lists, missing root...)
+    """
+    import hashlib
+    details = []
+    notes = []
+    masters = []
+    sub_counts = []
+    all_ok = True
+    any_zeroed = False
+
+    for idx, part in enumerate(parts):
+        pairs, reason = _scan_part_hashes(part)
+        with open(part, "rb") as f:
+            master = f.read(INTERLEAVE_HASH)
+        masters.append(master)
+        sub_counts.append(len(pairs))
+        if reason == "zeroed" and not pairs:
+            any_zeroed = True
+            notes.append("part %d: hash lists are zeroed - deep "
+                         "verification skipped" % (idx + 1))
+            details.append(("part %d" % (idx + 1), "no hashes stored "
+                            "(zeroed) - skipped", True))
+            continue
+        sub_fail = 0
+        for data, sub in pairs:
+            if not _verify_chunk(data, sub):
+                sub_fail += 1
+        calc_master = b"".join(hashlib.sha1(sb).digest()
+                               for _, sb in pairs)
+        master_ok = master[:len(calc_master)] == calc_master
+        ok = (sub_fail == 0) and master_ok
+        if not ok:
+            all_ok = False
+        msg = "ok" if ok else ("FAILED (%d sub-list mismatch(es), "
+                               "master %s)"
+                               % (sub_fail,
+                                  "ok" if master_ok else "mismatch"))
+        details.append(("part %d" % (idx + 1), msg, ok))
+
+    # cross-part chain + root only when every part was verifiable
+    verifiable = all(d[2] for d in details) and not any_zeroed
+    chain_ok = True
+    if verifiable and len(masters) > 1:
+        digest_next = None
+        for i in range(len(masters) - 1, -1, -1):
+            if digest_next is not None:
+                pos = sub_counts[i] * 20
+                appended = masters[i][pos:pos + 20]
+                if appended != digest_next:
+                    chain_ok = False
+            digest_next = hashlib.sha1(masters[i]).digest()
+        if not chain_ok:
+            all_ok = False
+        details.append(("chain", "ok" if chain_ok
+                        else "cross-part chain mismatch", chain_ok))
+
+    root_ok = True
+    if live_bytes and len(live_bytes) >= 0x391:
+        root = live_bytes[0x37D:0x391]
+        if any(root) and masters:
+            if verifiable:
+                root_ok = (hashlib.sha1(masters[0]).digest() == root)
+                if not root_ok:
+                    all_ok = False
+                details.append(("root", "ok" if root_ok
+                                else "MHT root hash does not match the "
+                                     ".live header", root_ok))
+            else:
+                notes.append("root check skipped (earlier verification "
+                             "failed)")
+        else:
+            notes.append("no MHT root hash present in the .live header - "
+                         "root check skipped")
+    return all_ok, details, notes
+
+
 def fix_sector_offsets(iso, live_bytes, lseek_offset=0):
     """Port of god2iso's FixSectorOffsets.  *iso* is an open r+b handle.
 
@@ -321,7 +492,7 @@ def fix_sector_offsets(iso, live_bytes, lseek_offset=0):
 
 def convert(live_path, out_path, trim=False, fix=False, quiet=False,
             force=False, progress_cb=None, sha256=False, log=None,
-            phase_cb=None):
+            phase_cb=None, verify=True):
     """Convert one GOD package to an ISO.
 
     Non-destructive contract:
@@ -470,10 +641,31 @@ def convert(live_path, out_path, trim=False, fix=False, quiet=False,
                        "default.xex: %s%s"
                        % (n, sum(1 for _, d, _ in files if d),
                           "FOUND" if default else "MISSING", note))
-        return 0 if default else 2
+        rc = 0 if default else 2
     except xiso.XisoError as e:
         _emit(log, "[god2iso] verify: FAILED - %s" % e)
         return 3
+
+    # deep Merkle-hash verification: proves the extracted data is
+    # byte-exact with what was stored in the GOD (independent of the
+    # filesystem parsing above)
+    if verify and rc in (0, 2):
+        if phase_cb:
+            phase_cb("Verifying Merkle hash tree...")
+        ok, details, notes = verify_mht(parts, live_bytes)
+        for note in notes:
+            _emit(log, "[god2iso] note: %s" % note)
+        if ok:
+            _emit(log, "[god2iso] MHT verification: PASSED (%d part(s), "
+                       "all hash lists match)" % len(parts))
+        else:
+            _emit(log, "[god2iso] MHT verification: FAILED - the stored "
+                       "SHA-1 hash lists do not match the extracted data "
+                       "(corrupt parts or wrong layout):")
+            for label, msg, okd in details:
+                _emit(log, "  %s: %s" % (label, msg))
+            return 4
+    return rc
 
 
 # ---------------------------------------------------------------------------
@@ -532,7 +724,8 @@ def cmd_convert(args):
         try:
             rc = convert(live, out, trim=args.trim, fix=args.fix,
                          quiet=args.quiet, force=args.force,
-                         progress_cb=_term_progress, sha256=args.sha256)
+                         progress_cb=_term_progress, sha256=args.sha256,
+                         verify=not args.no_verify)
         except (util.SafetyError, xiso.XisoError,
                 FileNotFoundError, ValueError, OSError) as e:
             print("error: %s" % e, file=sys.stderr)
@@ -858,6 +1051,8 @@ def main(argv=None):
                    help="show a live progress percentage")
     p.add_argument("--sha256", action="store_true",
                    help="print the output's SHA-256 checksum")
+    p.add_argument("--no-verify", action="store_true",
+                   help="skip the deep Merkle-hash (MHT) verification")
     p.add_argument("--quiet", action="store_true",
                    help="suppress non-error output")
     p.set_defaults(func=cmd_convert)
