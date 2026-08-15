@@ -38,9 +38,13 @@ HASH_BLOCK = 0x1000           # up to 204 x SHA-1
 
 def make_live(title_id=0x54455354, media_id=0x12345678, part_count=1,
               combined_size=0, vd_flags=0x00, vd_offset_raw=0,
-              content_type=0x7000):
+              content_type=0x7000, mht_root=None):
     """Synthetic .live file (XContent header, metadata fields per free60 /
-    iso2god-rs).  Only the first 0x400 bytes are meaningful to the parser."""
+    iso2god-rs).  Only the first 0x400 bytes are meaningful to the parser.
+
+    *mht_root* (20 bytes) is written at 0x37D - the Merkle tree root hash.
+    When None, a placeholder is used (tests that deep-verify must pass a
+    real root via godify())."""
     b = bytearray(0x5000)
     b[0:4] = b"LIVE"
     struct.pack_into(">I", b, 0x344, content_type)      # GamesOnDemand
@@ -54,7 +58,8 @@ def make_live(title_id=0x54455354, media_id=0x12345678, part_count=1,
     struct.pack_into("<I", b, 0x3A0, part_count)        # sic! little-endian
     struct.pack_into(">I", b, 0x3A4, combined_size // 0x100)
     # MHT root hash + block counts (iso2god-rs con_header.rs)
-    b[0x37D:0x391] = hashlib.sha1(b[:0x37D]).digest()[:20]
+    b[0x37D:0x391] = (mht_root if mht_root else
+                      hashlib.sha1(b[:0x37D]).digest()[:20])
     # blocks allocated: 24-bit big-endian @0x392 (must NOT touch 0x395!)
     b[0x392:0x395] = ((combined_size // 0x1000) & 0xFFFFFF).to_bytes(3, "big")
     # GOD2ISO sector-offset-fix fields (volume descriptor region)
@@ -84,6 +89,16 @@ def _master_list(sub_lists) -> bytes:
 
 def _build_part(payload: bytes) -> bytes:
     """One realistic part file: [master][sub0][data0][sub1][data1]..."""
+    master, body = _build_part_pieces(payload)
+    return master + body
+
+
+def _build_part_pieces(payload: bytes):
+    """Return (master_list_bytes, body_bytes) for one part.
+
+    body = [sub0][data0][sub1][data1]...; master = SHA-1 of each sub-list
+    (204 max, zero-padded to 0x1000).  The caller may append cross-part
+    chain digests to the master before writing (see godify)."""
     subs = []
     body = bytearray()
     pos = 0
@@ -94,7 +109,7 @@ def _build_part(payload: bytes) -> bytes:
         body += sub
         body += chunk
         pos += DATA_BLOCK
-    return bytes(_master_list(subs)) + bytes(body)
+    return bytes(_master_list(subs)), bytes(body)
 
 
 def godify(iso_bytes: bytes, out_dir: str, flavor="A",
@@ -133,9 +148,25 @@ def godify(iso_bytes: bytes, out_dir: str, flavor="A",
         slices.append(payload[start:c])
         start = c
 
+    # build each part, then chain the Merkle tree exactly like iso2god-rs:
+    #   part i's master list gets the digest of part i+1's master appended
+    #   (after its own sub-list hashes), and the .live root = digest of
+    #   part 0's final master list.
+    masters = []
+    bodies = []
+    for sl in slices:
+        m, b = _build_part_pieces(sl)
+        masters.append(bytearray(m))
+        bodies.append(b)
+    for i in range(len(masters) - 2, -1, -1):
+        n_subs = len(bodies[i]) // (DATA_BLOCK + HASH_BLOCK)
+        pos = n_subs * 20
+        masters[i][pos:pos + 20] = hashlib.sha1(bytes(masters[i + 1])).digest()
+    mht_root = hashlib.sha1(bytes(masters[0])).digest() if masters else None
+
     part_paths = []
     for i, sl in enumerate(slices):
-        body = _build_part(sl)
+        body = bytes(masters[i]) + bodies[i]
         if i == len(slices) - 1 and pad_last:
             body += bytes(pad_last)
         path = os.path.join(out_dir, "%s.data" % live_name,
@@ -146,7 +177,8 @@ def godify(iso_bytes: bytes, out_dir: str, flavor="A",
         part_paths.append(path)
 
     live = make_live(part_count=len(slices), combined_size=len(payload),
-                     vd_flags=vd_flags, vd_offset_raw=vd_offset_raw)
+                     vd_flags=vd_flags, vd_offset_raw=vd_offset_raw,
+                     mht_root=mht_root)
     live_path = os.path.join(out_dir, live_name)
     with open(live_path, "wb") as f:
         f.write(live)
