@@ -9,8 +9,6 @@ privately:
 
 - **Preferred:** open a *private vulnerability report* on GitHub:
   `https://github.com/<your-user>/god2iso/security/advisories/new`
-- Or email the maintainer (link on your profile) with the subject
-  `[god2iso security] ...`
 
 Please include:
 - the affected version / commit,
