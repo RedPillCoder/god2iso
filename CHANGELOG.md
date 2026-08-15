@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0 - 2026-08-15
+- **Deep Merkle-hash (MHT) verification** (`--verify`, on by default):
+  recomputes the SHA-1 chain stored in the GOD parts (data blocks ->
+  sub hash lists -> master hash lists -> cross-part chain -> .live root
+  hash) and proves the extracted ISO data is byte-exact with what was
+  stored.  A mismatch exits with code 4; `--no-verify` skips it.
+- Fixture generator now builds realistic MHTs (cross-part chaining + real
+  root hash) so verification is exercised end-to-end.
+- 68 automated tests (incl. corruption / tampered-master / wrong-root
+  detection).
+
 ## 1.2.1 — 2026-08-14
 - Fix: `format_size()` mishandled negative values (GUI edge case).
 - GUI: pre-flight warnings, package summary card, multi-package dropdown,
