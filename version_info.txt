@@ -1,0 +1,37 @@
+# UTF-8
+# PyInstaller version resource for god2iso.exe
+# Gives the executable proper PE metadata (company, product, version,
+# description) - one of the documented mitigations for heuristic
+# antivirus false positives on unsigned/packaged executables.
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 2, 1, 0),
+    prodvers=(1, 2, 1, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '040904B0',
+        [
+          StringStruct('CompanyName', 'god2iso project'),
+          StringStruct('FileDescription',
+                       'Xbox 360 GOD to ISO converter (offline, non-destructive)'),
+          StringStruct('FileVersion', '1.2.1'),
+          StringStruct('InternalName', 'god2iso'),
+          StringStruct('OriginalFilename', 'god2iso.exe'),
+          StringStruct('ProductName', 'god2iso'),
+          StringStruct('ProductVersion', '1.2.1'),
+          StringStruct('LegalCopyright',
+                       'Copyright (c) 2026 god2iso authors. MIT License.')
+        ]
+      )
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
